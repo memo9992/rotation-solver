@@ -3,223 +3,155 @@ package game
 import (
 	"fmt"
 	"time"
-
-	"github.com/memo9992/rotation-solver/pkg/utils"
 )
-
-type DamageType string
 
 const (
-	Physical   DamageType = "physical"
-	Magical    DamageType = "magical"
-	Unaspected DamageType = "unaspected"
+
+	// Damage modifiers
+
+	DECREASE string = "decrease"
+	INCREASE string = "increase"
+	ADDITIVE string = "additive"
+
+	// Condition actions
+
+	ADD    string = "add"
+	REMOVE string = "remove"
 )
 
-type BuffAction struct {
-	Action BuffActionType
-	Target Buff
+// Condition is a buff or debuff on the player. It can provide global damage modifiers
+// or exist as a pre-condition for other ability modifiers (e.g. combos).
+type Condition struct {
+	ID        string
+	Start     time.Time
+	Duration  time.Duration
+	Modifiers []DamageModifier
 }
 
-type BuffActionFunc func(t time.Time, buffs *Buffs) *BuffAction
+// Conditions is the current state of buffs/debuffs on the player.
+type Conditions map[string]Condition
 
+// WithAction applies a ConditionAction to the player state.
+func (c Conditions) WithAction(a ConditionAction) {
+	switch a.Action {
+	case ADD:
+		c[a.ID] = a.Condition
+	case REMOVE:
+		delete(c, a.ID)
+	default:
+		panic(fmt.Sprintf("Unknown condition action %v", a.Action))
+	}
+}
+
+// ConditionAction is an action to be applied to the player state. This will either add a new
+// Condition or modify or remove an existing Condition.
+type ConditionAction struct {
+	Action string
+	Condition
+}
+
+// Value is a numerical value with the source from which it originates from. This is used to track
+// damage modifiers from the abilities/buffs that caused them.
+type Value struct {
+	Source string
+	Value  int
+}
+
+// DamageInstance is a discrete set of damage that was caused by an ability. It includes slices for
+// base (additive) damage with the total increased modifiers.
+type DamageInstance struct {
+	Source    string
+	Base      []Value
+	Increased []Value
+}
+
+// Create a new DamageInstance with the given modifier.
+func (d DamageInstance) WithModifier(di DamageModifier) DamageInstance {
+	switch di.Action {
+	case ADDITIVE:
+		d.Base = append(d.Base, Value{
+			Source: di.Source,
+			Value:  di.Value,
+		})
+	case INCREASE:
+		d.Increased = append(d.Increased, Value{
+			Source: di.Source,
+			Value:  di.Value,
+		})
+	default:
+		panic(fmt.Sprintf("Unknown damage modifier action: %v", di.Action))
+	}
+
+	return d
+}
+
+// Calculate the total damage done by this instance.
+func (d DamageInstance) Calculate() int {
+	base := 0
+	for _, b := range d.Base {
+		base += b.Value
+	}
+
+	increased := 100
+	for _, i := range d.Increased {
+		increased += i.Value
+	}
+
+	return base * increased / 100
+}
+
+// DamageModifier affects an Ability before it creates a DamageInstance.
+type DamageModifier struct {
+	Source string
+	Action string
+	Value  int
+
+	// ConditionID that must exists on the player to apply this modifier.
+	RequiredConditionID string
+}
+
+// Ability creates damage instances, condition actions or both.
 type Ability struct {
-	ID          string
-	Name        string
-	Description string
-	Cooldown    time.Duration
-	CastTime    time.Duration
-	Damage      int64
-	DamageType  DamageType
-	Tags        *utils.Set[string]
-	OnActivate  BuffActionFunc
-	AfterBuffs  func(self Ability, buffs *Buffs) Ability
+	ID                 string
+	DoesDamage         bool
+	Base               int
+	DamageModifiers    []DamageModifier
+	ConditionModifiers []ConditionAction
 }
 
-func (a Ability) WithCastTime(d time.Duration) Ability {
-	a.CastTime = d
-	return a
-}
-
-func (a Ability) WithOnActivate(f BuffActionFunc) Ability {
-	a.OnActivate = f
-	return a
-}
-
-func (a Ability) WithAfterBuffs(f func(self Ability, buffs *Buffs) Ability) Ability {
-	a.AfterBuffs = f
-	return a
-}
-
-type Buff struct {
-	ID            string
-	Name          string
-	Description   string
-	TimeStart     time.Time
-	Duration      time.Duration
-	ActualTimeEnd time.Time
-	Stacks        int
-	Effects       map[BuffEffectType]int64
-}
-
-func (b Buff) IsZero() bool {
-	return b.ID == ""
-}
-
-type Buffs struct {
-	buffs []Buff
-}
-
-func (b *Buffs) Apply(action *BuffAction) {
-	if action == nil {
-		return
-	}
-	switch action.Action {
-	case "add":
-		b.buffs = append(b.buffs, action.Target)
-	}
-}
-
-func (b *Buffs) Update(t time.Time) {
-	out := []Buff{}
-
-	for _, currentBuff := range b.buffs {
-		if currentBuff.TimeStart.Add(currentBuff.Duration).After(t) {
-			out = append(out, currentBuff)
-		}
-	}
-
-	b.buffs = out
-}
-
-func (b *Buffs) Get(id string) Buff {
-	for _, buff := range b.buffs {
-		if buff.ID == id {
-			return buff
-		}
-	}
-
-	return Buff{}
-}
-
-func (b *Buffs) State() []Buff {
-	out := []Buff{}
-
-	for _, buff := range b.buffs {
-		out = append(out, buff)
-	}
-
-	return out
-}
-
-func (a Ability) IsGCD() bool {
-	return a.Tags.Contains("gcd")
-}
-
-func (a Ability) IsOGCD() bool {
-	return a.Tags.Contains("ogcd")
-}
-
-type NewAbilityOptions struct {
-	ID          string
-	Name        string
-	Description string
-	Cooldown    time.Duration
-	CastTime    time.Duration
-	Damage      int64
-	DamageType  DamageType
-	Tags        *utils.Set[string]
-	OnActivate  BuffActionFunc
-	AfterBuffs  func(Ability, *Buffs) Ability
-}
-
-func NewAbility(opts NewAbilityOptions) (Ability, error) {
-	if opts.ID == "" {
-		return Ability{}, fmt.Errorf("ability ID cannot be empty")
-	}
-	if opts.Name == "" {
-		return Ability{}, fmt.Errorf("ability Name cannot be empty")
-	}
-	if opts.DamageType != Physical && opts.DamageType != Magical && opts.DamageType != Unaspected {
-		return Ability{}, fmt.Errorf("invalid damage type: %s", opts.DamageType)
-	}
-	if opts.Tags == nil {
-		opts.Tags = utils.NewSet[string]()
-	}
-	if opts.OnActivate == nil {
-		opts.OnActivate = func(t time.Time, buffs *Buffs) *BuffAction {
-			return nil
-		}
-	}
-	if opts.AfterBuffs == nil {
-		opts.AfterBuffs = func(a Ability, b *Buffs) Ability {
-			return a
-		}
-	}
-
-	return Ability{
-		ID:          opts.ID,
-		Name:        opts.Name,
-		Description: opts.Description,
-		Cooldown:    opts.Cooldown,
-		CastTime:    opts.CastTime,
-		Damage:      opts.Damage,
-		DamageType:  opts.DamageType,
-		Tags:        opts.Tags,
-		OnActivate:  opts.OnActivate,
-		AfterBuffs:  opts.AfterBuffs,
-	}, nil
-}
-
-func MustNewAbility(opts NewAbilityOptions) Ability {
-	ability, err := NewAbility(opts)
-	if err != nil {
-		panic(err)
-	}
-	return ability
-}
-
-func MustNewGCD(id string, name string, damage int64, damageType DamageType) Ability {
-	s := utils.NewSet("gcd")
-	return MustNewAbility(NewAbilityOptions{
-		ID:         id,
-		Name:       name,
-		CastTime:   0,
-		Cooldown:   0,
-		Damage:     damage,
-		DamageType: damageType,
-		Tags:       s,
-	})
-}
-
-func MustNewOGCD(id string, name string, cooldown time.Duration, damage int64, damageType DamageType) Ability {
-	s := utils.NewSet("ogcd")
-	return MustNewAbility(NewAbilityOptions{
-		ID:         id,
-		Name:       name,
-		Cooldown:   cooldown,
-		Damage:     damage,
-		DamageType: damageType,
-		Tags:       s,
-	})
-}
-
-func MustNewDamageBuff(id string, name string, duration time.Duration, cooldown time.Duration, multiplier int64) Ability {
-	a := MustNewOGCD(id, name, cooldown, 0, Unaspected)
-	a.OnActivate = func(t time.Time, buffs *Buffs) *BuffAction {
-		return &BuffAction{
-			Action: "add",
-			Target: Buff{
-				ID:        id,
-				Name:      name,
-				TimeStart: t,
-				Duration:  duration,
-				Stacks:    1,
-				Effects: map[BuffEffectType]int64{
-					BuffEffectDamageMultiplier: multiplier,
+// Activate the Ability to create damage instances or condition actions based on the player's current
+// condition state.
+func (a Ability) Activate(conditions Conditions) ([]DamageInstance, []ConditionAction) {
+	var diOut []DamageInstance
+	if a.DoesDamage {
+		di := DamageInstance{
+			Source: a.ID,
+			Base: []Value{
+				{
+					Source: a.ID,
+					Value:  a.Base,
 				},
 			},
 		}
+
+		for _, d := range a.DamageModifiers {
+			if d.RequiredConditionID != "" {
+				if _, ok := conditions[d.RequiredConditionID]; !ok {
+					continue
+				}
+			}
+
+			di = di.WithModifier(d)
+		}
+
+		for _, c := range conditions {
+			for _, m := range c.Modifiers {
+				di = di.WithModifier(m)
+			}
+		}
+
+		diOut = append(diOut, di)
 	}
 
-	return a
+	return diOut, a.ConditionModifiers
 }

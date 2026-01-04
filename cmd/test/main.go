@@ -1,37 +1,75 @@
 package main
 
 import (
-	"fmt"
 	"time"
 
-	"github.com/memo9992/rotation-solver/pkg/ff"
 	"github.com/memo9992/rotation-solver/pkg/game"
 	"github.com/memo9992/rotation-solver/pkg/solver"
 )
 
 func main() {
-	r := solver.NewRotation(
-		time.Millisecond*2500,
-		time.Millisecond*1000,
-	)
+	comboStarter := game.Ability{
+		ID:         "comboStarter",
+		Base:       100,
+		DoesDamage: true,
+		ConditionModifiers: []game.ConditionAction{
+			{
+				Action: game.ADD,
+				Condition: game.Condition{
+					ID:       "comboStarterCombo",
+					Duration: time.Second * 30,
+				},
+			},
+		},
+	}
+	comboFollower := game.Ability{
+		ID:         "comboFollower",
+		Base:       100,
+		DoesDamage: true,
+		DamageModifiers: []game.DamageModifier{
+			{
+				Action:              game.ADDITIVE,
+				Value:               150,
+				RequiredConditionID: "comboStarterCombo",
+			},
+		},
+		ConditionModifiers: []game.ConditionAction{
+			{
+				Action: game.REMOVE,
+				Condition: game.Condition{
+					ID: "comboStarterCombo",
+				},
+			},
+		},
+	}
+
+	buff := game.Ability{
+		ID:         "buff",
+		DoesDamage: false,
+		ConditionModifiers: []game.ConditionAction{
+			{
+				Action: game.ADD,
+				Condition: game.Condition{
+					ID:       "buff",
+					Duration: time.Second * 30,
+					Modifiers: []game.DamageModifier{
+						{
+							Source: "buff",
+							Action: game.INCREASE,
+							Value:  10,
+						},
+					},
+				},
+			},
+		},
+	}
+
 	rotation := []game.Ability{
-		ff.HolySpirit,
-		ff.FastBlade,
-		ff.FightOrFlight,
-		ff.RiotBlade,
-		// ff.Requiescat,
+		comboStarter,
+		buff,
+		comboFollower,
+		comboFollower,
 	}
 
-	for _, a := range rotation {
-		r.AddEvent(a)
-	}
-
-	results := r.Calculate()
-
-	for damageType, damageValue := range results.TotalDamage {
-		fmt.Printf("Total %s Damage: %d\n", damageType, damageValue)
-	}
-
-	totalTime := results.TotalTime
-	fmt.Printf("Total time: %s", totalTime.String())
+	solver.Solve(rotation)
 }
